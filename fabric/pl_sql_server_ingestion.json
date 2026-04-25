@@ -1,0 +1,694 @@
+{
+    "name": "pl_keters_etrac_ingestion",
+    "objectId": "27d7d811-efef-4969-a6e4-d692c5b3975c",
+    "properties": {
+        "activities": [
+            {
+                "name": "Get Metadata",
+                "description": "Retrieve ETrac Objects Metadata from Utils Lakehouse.",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "typeProperties": {
+                    "source": {
+                        "type": "LakehouseTableSource"
+                    },
+                    "firstRowOnly": false,
+                    "datasetSettings": {
+                        "annotations": [],
+                        "linkedService": {
+                            "name": "lh_utils",
+                            "properties": {
+                                "annotations": [],
+                                "type": "Lakehouse",
+                                "typeProperties": {
+                                    "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                    "artifactId": "c25ffaa2-539f-463b-b9e3-b12be0c53b62",
+                                    "rootFolder": "Tables"
+                                }
+                            }
+                        },
+                        "type": "LakehouseTable",
+                        "schema": [],
+                        "typeProperties": {
+                            "schema": {
+                                "value": "@pipeline().parameters.config_schema_name",
+                                "type": "Expression"
+                            },
+                            "table": {
+                                "value": "@pipeline().parameters.config_table_name",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Iterate Metadata",
+                "description": "Iterate Over Metadata (Ingest only Active Objects from eTrac DB)",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Set NB ExitValue",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('Filter Active Objects').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 8,
+                    "activities": [
+                        {
+                            "name": "Check Table Exist or Not",
+                            "description": "Check if table exists in LH and the Data Load strategy (Incremental or Full Load)",
+                            "type": "IfCondition",
+                            "dependsOn": [],
+                            "typeProperties": {
+                                "expression": {
+                                    "value": "@and(\n    equals(\n        json(variables('nb_exit_value'))[string(item().object_id)].table_exists,\n        true\n    ),\n    equals(item().source_extract_strategy, 'Incremental')\n)",
+                                    "type": "Expression"
+                                },
+                                "ifFalseActivities": [
+                                    {
+                                        "name": "Load Entire Object",
+                                        "description": "Load the entire object from eTrac DB to LH if table is not present.",
+                                        "type": "Copy",
+                                        "dependsOn": [],
+                                        "policy": {
+                                            "timeout": "0.00:30:00",
+                                            "retry": 0,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "SqlServerSource",
+                                                "additionalColumns": [
+                                                    {
+                                                        "name": "__DataLoadedFrom",
+                                                        "value": {
+                                                            "value": "@item().source_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "__DataLoadedAt",
+                                                        "value": {
+                                                            "value": "@addHours(utcNow(), -5)",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                ],
+                                                "sqlReaderQuery": {
+                                                    "value": "SELECT\n    @{if(empty(item().required_columns), '*', item().required_columns)}\nFROM\n    [@{item().source_schema_name}].[@{item().source_table_name}]",
+                                                    "type": "Expression"
+                                                },
+                                                "queryTimeout": "02:00:00",
+                                                "partitionOption": "None",
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "type": "SqlServerTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "database": {
+                                                            "value": "@item().source_db_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "externalReferences": {
+                                                        "connection": "ad6ee96d-3dd8-4bb7-a279-b49f27564de4"
+                                                    }
+                                                }
+                                            },
+                                            "sink": {
+                                                "type": "LakehouseTableSink",
+                                                "tableActionOption": "OverwriteSchema",
+                                                "partitionOption": "None",
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "linkedService": {
+                                                        "name": "lh_raw",
+                                                        "properties": {
+                                                            "annotations": [],
+                                                            "type": "Lakehouse",
+                                                            "typeProperties": {
+                                                                "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                                                "artifactId": "498b3814-f55f-405f-aff2-3cc4db050383",
+                                                                "rootFolder": "Tables"
+                                                            }
+                                                        }
+                                                    },
+                                                    "type": "LakehouseTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "schema": {
+                                                            "value": "@item().sink_schema_name",
+                                                            "type": "Expression"
+                                                        },
+                                                        "table": {
+                                                            "value": "@item().sink_object_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "enableStaging": false,
+                                            "translator": {
+                                                "type": "TabularTranslator",
+                                                "typeConversion": true,
+                                                "typeConversionSettings": {
+                                                    "allowDataTruncation": true,
+                                                    "treatBooleanAsNumber": false
+                                                }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "Logger Data Ingestion - Full",
+                                        "description": "Copies the Full ingestion logs to the log table",
+                                        "type": "Copy",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "Load Entire Object",
+                                                "dependencyConditions": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        ],
+                                        "policy": {
+                                            "timeout": "0.00:10:00",
+                                            "retry": 0,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "LakehouseTableSource",
+                                                "additionalColumns": [
+                                                    {
+                                                        "name": "source_name",
+                                                        "value": {
+                                                            "value": "@item().source_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "object_name",
+                                                        "value": {
+                                                            "value": "@item().source_table_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "row_count",
+                                                        "value": {
+                                                            "value": "@json(variables('nb_exit_value'))[string(item().object_id)].row_count",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "status",
+                                                        "value": {
+                                                            "value": "@activity('Load Entire Object').Status",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "error_message",
+                                                        "value": {
+                                                            "value": "@if(\n    equals(activity('Load Entire Object').Status, 'Failed'),\n    string(activity('Load Entire Object').error.message),\n    null\n)\n",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "load_type",
+                                                        "value": {
+                                                            "value": "@string('Full')",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "duration",
+                                                        "value": {
+                                                            "value": "@concat(\n  string(div(activity('Load Entire Object').output.executionDuration, 60)), \n  'm ',\n  string(mod(activity('Load Entire Object').output.executionDuration, 60)), \n  's'\n)",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "created_date",
+                                                        "value": {
+                                                            "value": "@{\n    formatDateTime(\n        json(variables('nb_exit_value'))[string(item().object_id)].last_created_date,\n        'yyyy-MM-dd HH:mm:ss.fff'\n    )\n}",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "max_modified_date",
+                                                        "value": {
+                                                            "value": "@{\n    formatDateTime(\n        json(variables('nb_exit_value'))[string(item().object_id)].last_modified_date,\n        'yyyy-MM-dd HH:mm:ss.fff'\n    )\n}",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "loaded_at",
+                                                        "value": {
+                                                            "value": "@string(utcNow())",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                ],
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "linkedService": {
+                                                        "name": "lh_utils",
+                                                        "properties": {
+                                                            "annotations": [],
+                                                            "type": "Lakehouse",
+                                                            "typeProperties": {
+                                                                "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                                                "artifactId": "c25ffaa2-539f-463b-b9e3-b12be0c53b62",
+                                                                "rootFolder": "Tables"
+                                                            }
+                                                        }
+                                                    },
+                                                    "type": "LakehouseTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "schema": "logs",
+                                                        "table": "template_table"
+                                                    }
+                                                }
+                                            },
+                                            "sink": {
+                                                "type": "LakehouseTableSink",
+                                                "tableActionOption": "Append",
+                                                "partitionOption": "None",
+                                                "applyVOrder": true,
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "linkedService": {
+                                                        "name": "lh_utils",
+                                                        "properties": {
+                                                            "annotations": [],
+                                                            "type": "Lakehouse",
+                                                            "typeProperties": {
+                                                                "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                                                "artifactId": "c25ffaa2-539f-463b-b9e3-b12be0c53b62",
+                                                                "rootFolder": "Tables"
+                                                            }
+                                                        }
+                                                    },
+                                                    "type": "LakehouseTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "schema": "logs",
+                                                        "table": "raw_ingestion_logger"
+                                                    }
+                                                }
+                                            },
+                                            "enableStaging": false,
+                                            "translator": {
+                                                "type": "TabularTranslator",
+                                                "typeConversion": true,
+                                                "typeConversionSettings": {
+                                                    "allowDataTruncation": true,
+                                                    "treatBooleanAsNumber": false
+                                                }
+                                            }
+                                        }
+                                    }
+                                ],
+                                "ifTrueActivities": [
+                                    {
+                                        "name": "Load Updated Records",
+                                        "description": "Copy only updated records from eTrac DB to the existing table.",
+                                        "type": "Copy",
+                                        "dependsOn": [],
+                                        "policy": {
+                                            "timeout": "0.00:30:00",
+                                            "retry": 0,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "SqlServerSource",
+                                                "additionalColumns": [
+                                                    {
+                                                        "name": "__DataLoadedFrom",
+                                                        "value": {
+                                                            "value": "@item().source_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "__DataLoadedAt",
+                                                        "value": {
+                                                            "value": "@addHours(utcNow(), -5)",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                ],
+                                                "sqlReaderQuery": {
+                                                    "value": "SELECT\n    @{if(empty(item().required_columns), '*', item().required_columns)}\nFROM\n    [@{item().source_schema_name}].[@{item().source_table_name}]\nWHERE\n   @{item().source_modified_date_column} > '@{\n        formatDateTime(\n            json(variables('nb_exit_value'))[string(item().object_id)].last_modified_date,\n            'yyyy-MM-dd HH:mm:ss.fff'\n        )\n    }'\n    OR\n    @{item().source_created_date_column} > '@{\n        formatDateTime(\n            json(variables('nb_exit_value'))[string(item().object_id)].last_created_date,\n            'yyyy-MM-dd HH:mm:ss.fff'\n        )\n    }'",
+                                                    "type": "Expression"
+                                                },
+                                                "queryTimeout": "02:00:00",
+                                                "partitionOption": "None",
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "type": "SqlServerTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "database": {
+                                                            "value": "@item().source_db_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    "externalReferences": {
+                                                        "connection": "ad6ee96d-3dd8-4bb7-a279-b49f27564de4"
+                                                    }
+                                                }
+                                            },
+                                            "sink": {
+                                                "type": "LakehouseTableSink",
+                                                "tableActionOption": "Append",
+                                                "applyVOrder": true,
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "linkedService": {
+                                                        "name": "lh_raw",
+                                                        "properties": {
+                                                            "annotations": [],
+                                                            "type": "Lakehouse",
+                                                            "typeProperties": {
+                                                                "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                                                "artifactId": "498b3814-f55f-405f-aff2-3cc4db050383",
+                                                                "rootFolder": "Tables"
+                                                            }
+                                                        }
+                                                    },
+                                                    "type": "LakehouseTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "schema": {
+                                                            "value": "@item().sink_schema_name",
+                                                            "type": "Expression"
+                                                        },
+                                                        "table": {
+                                                            "value": "@item().sink_object_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "enableStaging": false,
+                                            "translator": {
+                                                "type": "TabularTranslator",
+                                                "typeConversion": true,
+                                                "typeConversionSettings": {
+                                                    "allowDataTruncation": true,
+                                                    "treatBooleanAsNumber": false
+                                                }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "Logger Data Ingestion - Incremental",
+                                        "description": "Copies the incremental ingestion logs to the log table",
+                                        "type": "Copy",
+                                        "dependsOn": [
+                                            {
+                                                "activity": "Load Updated Records",
+                                                "dependencyConditions": [
+                                                    "Completed"
+                                                ]
+                                            }
+                                        ],
+                                        "policy": {
+                                            "timeout": "0.00:10:00",
+                                            "retry": 0,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "typeProperties": {
+                                            "source": {
+                                                "type": "LakehouseTableSource",
+                                                "additionalColumns": [
+                                                    {
+                                                        "name": "source_name",
+                                                        "value": {
+                                                            "value": "@item().source_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "object_name",
+                                                        "value": {
+                                                            "value": "@item().source_table_name",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "row_count",
+                                                        "value": {
+                                                            "value": "@json(variables('nb_exit_value'))[string(item().object_id)].row_count",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "status",
+                                                        "value": {
+                                                            "value": "@activity('Load Updated Records').Status",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "error_message",
+                                                        "value": {
+                                                            "value": "@if(\n    equals(activity('Load Updated Records').Status, 'Failed'),\n    string(activity('Load Updated Records').error.message),\n    null\n)\n",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "load_type",
+                                                        "value": {
+                                                            "value": "@string('Incremental')",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "duration",
+                                                        "value": {
+                                                            "value": "@concat(\n  string(div(activity('Load Updated Records').output.copyDuration, 60)), \n  'm ',\n  string(mod(activity('Load Updated Records').output.copyDuration, 60)), \n  's'\n)",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "created_date",
+                                                        "value": {
+                                                            "value": "@{\n    formatDateTime(\n        json(variables('nb_exit_value'))[string(item().object_id)].last_created_date,\n        'yyyy-MM-dd HH:mm:ss.fff'\n    )\n}",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "max_modified_date",
+                                                        "value": {
+                                                            "value": "@{\n    formatDateTime(\n        json(variables('nb_exit_value'))[string(item().object_id)].last_modified_date,\n        'yyyy-MM-dd HH:mm:ss.fff'\n    )\n}",
+                                                            "type": "Expression"
+                                                        }
+                                                    },
+                                                    {
+                                                        "name": "loaded_at",
+                                                        "value": {
+                                                            "value": "@string(utcNow())",
+                                                            "type": "Expression"
+                                                        }
+                                                    }
+                                                ],
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "linkedService": {
+                                                        "name": "lh_utils",
+                                                        "properties": {
+                                                            "annotations": [],
+                                                            "type": "Lakehouse",
+                                                            "typeProperties": {
+                                                                "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                                                "artifactId": "c25ffaa2-539f-463b-b9e3-b12be0c53b62",
+                                                                "rootFolder": "Tables"
+                                                            }
+                                                        }
+                                                    },
+                                                    "type": "LakehouseTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "schema": "logs",
+                                                        "table": "template_table"
+                                                    }
+                                                }
+                                            },
+                                            "sink": {
+                                                "type": "LakehouseTableSink",
+                                                "tableActionOption": "Append",
+                                                "partitionOption": "None",
+                                                "applyVOrder": true,
+                                                "datasetSettings": {
+                                                    "annotations": [],
+                                                    "linkedService": {
+                                                        "name": "lh_utils",
+                                                        "properties": {
+                                                            "annotations": [],
+                                                            "type": "Lakehouse",
+                                                            "typeProperties": {
+                                                                "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                                                                "artifactId": "c25ffaa2-539f-463b-b9e3-b12be0c53b62",
+                                                                "rootFolder": "Tables"
+                                                            }
+                                                        }
+                                                    },
+                                                    "type": "LakehouseTable",
+                                                    "schema": [],
+                                                    "typeProperties": {
+                                                        "schema": "logs",
+                                                        "table": "raw_ingestion_logger"
+                                                    }
+                                                }
+                                            },
+                                            "enableStaging": false,
+                                            "translator": {
+                                                "type": "TabularTranslator",
+                                                "typeConversion": true,
+                                                "typeConversionSettings": {
+                                                    "allowDataTruncation": true,
+                                                    "treatBooleanAsNumber": false
+                                                }
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Filter Active Objects",
+                "description": "Filtering only Active Objects",
+                "type": "Filter",
+                "dependsOn": [
+                    {
+                        "activity": "Get Metadata",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('Get Metadata').output.value",
+                        "type": "Expression"
+                    },
+                    "condition": {
+                        "value": "@equals(item().is_active, '1')",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Check Tables Existence",
+                "description": "Check the Table Existence and Last Modified Dates, Created Dates of all the eTrac Objects from RAW LH.",
+                "type": "TridentNotebook",
+                "dependsOn": [
+                    {
+                        "activity": "Filter Active Objects",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:30:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "typeProperties": {
+                    "notebookId": "ce129564-a403-4a6f-bfac-a865028749aa",
+                    "workspaceId": "8e505f92-2baa-4784-853e-edf6044c1517",
+                    "parameters": {
+                        "table_metadata": {
+                            "value": {
+                                "value": "@string(activity('Filter Active Objects').output.value)",
+                                "type": "Expression"
+                            },
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "Set NB ExitValue",
+                "description": "Set the NB Exit Value that contains the information of SF Objects like LastModifiedDate, Row COunt etc.",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "Check Tables Existence",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "typeProperties": {
+                    "variableName": "nb_exit_value",
+                    "value": {
+                        "value": "@string(json(activity('Check Tables Existence').output.result.exitValue).tables_metadata)",
+                        "type": "Expression"
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "config_schema_name": {
+                "type": "string",
+                "defaultValue": "source_config"
+            },
+            "config_table_name": {
+                "type": "string",
+                "defaultValue": "etrac_keters"
+            }
+        },
+        "variables": {
+            "last_modified_date": {
+                "type": "String"
+            },
+            "table_exists": {
+                "type": "Boolean"
+            },
+            "nb_exit_value": {
+                "type": "String"
+            }
+        },
+        "lastModifiedByObjectId": "bfd89b5c-1720-4f83-8ad5-774d8693e8e6",
+        "lastPublishTime": "2025-11-24T08:58:51Z"
+    }
+}
